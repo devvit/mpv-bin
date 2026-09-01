@@ -1,23 +1,14 @@
 #!/usr/bin/env bash
+
 set -euo pipefail
 
-# 1. 检查操作系统类型
-if [ "$(uname -s)" != "Darwin" ]; then
-  echo "Error: This plugin only supports macOS (Darwin)." >&2
+# 1. 架构与系统检查
+OS="$(uname -s)"
+if [ "$OS" != "Darwin" ]; then
+  echo "Error: This plugin only supports macOS." >&2
   exit 1
 fi
 
-# 2. 获取 asdf 传入的参数
-INSTALL_TYPE="${1:-}"
-VERSION="${2:-}"
-INSTALL_PATH="${3:-}"
-
-if [ -z "$INSTALL_PATH" ]; then
-  echo "Error: Missing install path argument." >&2
-  exit 1
-fi
-
-# 3. 判断系统架构
 ARCH="$(uname -m)"
 case "$ARCH" in
   arm64|aarch64)
@@ -32,63 +23,61 @@ case "$ARCH" in
     ;;
 esac
 
-echo "--> Detected Architecture: ${ARCH_KEY}"
-
-# 4. 创建临时下载目录与目标目录
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+# 2. 获取 asdf 传入的参数
+INSTALL_TYPE="$1"
+VERSION="$2"
+INSTALL_PATH="$3"
 
 BIN_DIR="${INSTALL_PATH}/bin"
 LIB_DIR="${INSTALL_PATH}/lib"
-mkdir -p "$BIN_DIR" "$LIB_DIR"
 
-# 5. 调用 GitHub API 获取最新的 Release 信息
-REPO="eko5624/mpv-mac"
-API_URL="https://api.github.com/repos/${REPO}/releases/latest"
+mkdir -p "${BIN_DIR}" "${LIB_DIR}"
 
-echo "--> Fetching latest release info from ${REPO}..."
-RELEASE_JSON="$(curl -sSL "$API_URL")"
+# 3. 创建临时工作目录
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${TMP_DIR}"' EXIT
 
-# 提取符合当前架构的所有 .zip 下载链接
-URLS="$(echo "$RELEASE_JSON" | grep -oE 'https://github\.com/[^"]+\.zip' | grep "${ARCH_KEY}" | sort -u)"
+echo "Fetching latest release information from GitHub..."
 
-if [ -z "$URLS" ]; then
-  echo "Error: No matching ZIP assets found for architecture ${ARCH_KEY}." >&2
+# 4. 请求 API 获取最新 Release 的所有下载地址
+RELEASE_JSON="$(curl -sSL "https://api.github.com/repos/eko5624/mpv-mac/releases/latest")"
+
+# 解析符合当前架构的所有 zip 链接
+DOWNLOAD_URLS=$(echo "$RELEASE_JSON" | grep -oE "https://[^\"]+\\.zip" | grep "${ARCH_KEY}" || true)
+
+if [ -z "$DOWNLOAD_URLS" ]; then
+  echo "Error: Could not find zip packages for architecture '${ARCH_KEY}' in the latest release." >&2
   exit 1
 fi
 
-# 6. 下载并解压 ZIP 文件
-echo "$URLS" | while read -r url; do
-  [ -z "$url" ] && continue
-  filename="$(basename "$url")"
-  echo "--> Downloading ${filename}..."
-  curl -sSL "$url" -o "${TMP_DIR}/${filename}"
+# 5. 下载并解压对应的 zip 包
+cd "${TMP_DIR}"
+for url in $DOWNLOAD_URLS; do
+  echo "Downloading: ${url}"
+  filename=$(basename "$url")
+  curl -sSL -o "$filename" "$url"
   
-  echo "--> Extracting ${filename}..."
-  unzip -q -o "${TMP_DIR}/${filename}" -d "$TMP_DIR"
+  echo "Unpacking: ${filename}"
+  unzip -q -o "$filename" -d "extracted_${filename}"
 done
 
-# 7. 查找并移动二进制文件到 bin 目录
-echo "--> Moving binaries to ${BIN_DIR}..."
+# 6. 查找指定的目标二进制文件并移动到 bin/
+echo "Installing binaries to ${BIN_DIR}..."
 TARGET_BINS=("ffmpeg" "ffplay" "ffprobe" "mpv")
 
-for bin in "${TARGET_BINS[@]}"; do
-  # 排除刚才下载的 zip 文件本身，查找同名可执行文件
-  found_file="$(find "$TMP_DIR" -type f -name "$bin" ! -name "*.zip" | head -n 1)"
+for bin_name in "${TARGET_BINS[@]}"; do
+  found_file=$(find . -type f -name "$bin_name" | head -n 1)
   if [ -n "$found_file" ]; then
-    cp "$found_file" "${BIN_DIR}/"
-    chmod +x "${BIN_DIR}/${bin}"
-    echo "    Installed ${bin}"
+    echo "  -> Found ${bin_name}"
+    cp -p "$found_file" "${BIN_DIR}/${bin_name}"
+    chmod +x "${BIN_DIR}/${bin_name}"
   else
-    echo "    Warning: Binary ${bin} not found in release assets."
+    echo "  -> Warning: ${bin_name} not found in release packages." >&2
   fi
 done
 
-# 8. 查找并移动所有 .dylib 动态库到 lib 目录
-echo "--> Moving shared libraries (*.dylib) to ${LIB_DIR}..."
-find "$TMP_DIR" -type f -name "*.dylib" | while read -r dylib; do
-  cp "$dylib" "${LIB_DIR}/"
-  echo "    Installed $(basename "$dylib")"
-done
+# 7. 查找所有 *.dylib 库文件并移动到 lib/
+echo "Installing dylibs to ${LIB_DIR}..."
+find . -type f -name "*.dylib" -exec cp -p {} "${LIB_DIR}/" \;
 
-echo "--> Installation completed successfully!"
+echo "Successfully installed ffmpeg & mpv binaries to ${INSTALL_PATH}"
