@@ -2,73 +2,75 @@
 
 set -euo pipefail
 
-INSTALL_TYPE="$1"
-VERSION="$2"
-INSTALL_PATH="$3"
-
-if [ "$(uname -s)" != "Darwin" ]; then
+# 1. 架构与系统检查 (仅支持 macOS)
+OS="$(uname -s)"
+if [ "$OS" != "Darwin" ]; then
   echo "Error: This plugin only supports macOS." >&2
   exit 1
 fi
 
-# Detect architecture
 ARCH="$(uname -m)"
 case "$ARCH" in
   arm64|aarch64)
-    ARCH_PATTERN="arm64"
+    ARCH_KEY="arm64"
     ;;
   x86_64)
-    ARCH_PATTERN="x86_64"
+    ARCH_KEY="x86_64"
     ;;
   *)
-    echo "Error: Unsupported architecture: $ARCH" >&2
+    echo "Error: Unsupported architecture $ARCH" >&2
     exit 1
     ;;
 esac
 
-echo "Fetching latest release information from GitHub..."
+# 2. 获取最新 Release 的下载链接
 REPO="eko5624/mpv-mac"
-RELEASE_JSON=$(curl -sSL "https://api.github.com/repos/${REPO}/releases/latest")
+API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 
-# Extract download URLs for ffmpeg and mpv matching the system architecture
-FFMPEG_URL=$(echo "$RELEASE_JSON" | grep -o 'https://[^"]*' | grep "ffmpeg-${ARCH_PATTERN}" | grep '\.zip$' | head -n 1 || true)
-MPV_URL=$(echo "$RELEASE_JSON" | grep -o 'https://[^"]*' | grep "mpv-${ARCH_PATTERN}" | grep '\.zip$' | head -n 1 || true)
+echo "Fetching latest release info from GitHub..."
+RELEASE_JSON="$(curl -fsSL "$API_URL")"
+
+# 提取匹配当前架构的 ffmpeg 和 mpv zip 下载 URL
+FFMPEG_URL="$(echo "$RELEASE_JSON" | grep -oE "https://[^\"]+ffmpeg-${ARCH_KEY}-[^\"]+\.zip" | head -n 1)"
+MPV_URL="$(echo "$RELEASE_JSON" | grep -oE "https://[^\"]+mpv-${ARCH_KEY}-[^\"]+\.zip" | head -n 1)"
 
 if [ -z "$FFMPEG_URL" ] || [ -z "$MPV_URL" ]; then
-  echo "Error: Could not find binaries matching architecture '${ARCH_PATTERN}' in latest release." >&2
+  echo "Error: Could not find matching download URLs for architecture: $ARCH_KEY" >&2
   exit 1
 fi
 
-# Prepare temporary working directories
-TMP_DIR=$(mktemp -d)
+# 3. 创建临时目录并下载/解压
+TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-echo "Downloading packages..."
-curl -sSL "$FFMPEG_URL" -o "$TMP_DIR/ffmpeg.zip"
-curl -sSL "$MPV_URL" -o "$TMP_DIR/mpv.zip"
+echo "Downloading ffmpeg from: $FFMPEG_URL"
+curl -fsSL "$FFMPEG_URL" -o "$TMP_DIR/ffmpeg.zip"
 
-echo "Extracting packages..."
-EXTRACT_DIR="$TMP_DIR/extracted"
-mkdir -p "$EXTRACT_DIR"
-unzip -q "$TMP_DIR/ffmpeg.zip" -d "$EXTRACT_DIR"
-unzip -q "$TMP_DIR/mpv.zip" -d "$EXTRACT_DIR"
+echo "Downloading mpv from: $MPV_URL"
+curl -fsSL "$MPV_URL" -o "$TMP_DIR/mpv.zip"
 
-# Target installation directory
-TARGET_BIN_DIR="${INSTALL_PATH}/bin"
+echo "Extracting archives..."
+unzip -q "$TMP_DIR/ffmpeg.zip" -d "$TMP_DIR/extracted"
+unzip -q "$TMP_DIR/mpv.zip" -d "$TMP_DIR/extracted"
+
+# 4. 创建 asdf 目标 bin 目录并查找移动目标二进制文件
+TARGET_BIN_DIR="${ASDF_INSTALL_PATH}/bin"
 mkdir -p "$TARGET_BIN_DIR"
 
-echo "Locating and installing binaries..."
-BINARIES=("ffmpeg" "ffplay" "ffprobe" "mpv")
+TARGET_FILES=("ffmpeg" "ffplay" "ffprobe" "mpv")
 
-for bin in "${BINARIES[@]}"; do
-  FOUND_PATH=$(find "$EXTRACT_DIR" -type f -name "$bin" -print -quit)
+echo "Installing binaries into $TARGET_BIN_DIR ..."
+for binary in "${TARGET_FILES[@]}"; do
+  # 遍历查找对应名称的文件
+  FOUND_PATH="$(find "$TMP_DIR/extracted" -type f -name "$binary" | head -n 1)"
+  
   if [ -n "$FOUND_PATH" ]; then
-    cp "$FOUND_PATH" "$TARGET_BIN_DIR/$bin"
-    chmod +x "$TARGET_BIN_DIR/$bin"
-    echo "  Installed $bin -> $TARGET_BIN_DIR/$bin"
+    cp "$FOUND_PATH" "$TARGET_BIN_DIR/$binary"
+    chmod +x "$TARGET_BIN_DIR/$binary"
+    echo "  - Installed $binary"
   else
-    echo "Warning: Binary '$bin' not found in downloaded archives." >&2
+    echo "  - Warning: $binary not found in released archives." >&2
   fi
 done
 
-echo "Installation complete!"
+echo "Installation completed successfully!"
