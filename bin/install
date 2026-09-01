@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 
-# 1. 架构与系统检查 (仅支持 macOS)
-OS="$(uname -s)"
-if [ "$OS" != "Darwin" ]; then
-  echo "Error: This plugin only supports macOS." >&2
+# 1. 检查操作系统类型
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "Error: This plugin only supports macOS (Darwin)." >&2
   exit 1
 fi
 
+# 2. 获取 asdf 传入的参数
+INSTALL_TYPE="${1:-}"
+VERSION="${2:-}"
+INSTALL_PATH="${3:-}"
+
+if [ -z "$INSTALL_PATH" ]; then
+  echo "Error: Missing install path argument." >&2
+  exit 1
+fi
+
+# 3. 判断系统架构
 ARCH="$(uname -m)"
 case "$ARCH" in
   arm64|aarch64)
@@ -23,54 +32,63 @@ case "$ARCH" in
     ;;
 esac
 
-# 2. 获取最新 Release 的下载链接
-REPO="eko5624/mpv-mac"
-API_URL="https://api.github.com/repos/${REPO}/releases/latest"
+echo "--> Detected Architecture: ${ARCH_KEY}"
 
-echo "Fetching latest release info from GitHub..."
-RELEASE_JSON="$(curl -fsSL "$API_URL")"
-
-# 提取匹配当前架构的 ffmpeg 和 mpv zip 下载 URL
-FFMPEG_URL="$(echo "$RELEASE_JSON" | grep -oE "https://[^\"]+ffmpeg-${ARCH_KEY}-[^\"]+\.zip" | head -n 1)"
-MPV_URL="$(echo "$RELEASE_JSON" | grep -v libmpv | grep -oE "https://[^\"]+mpv-${ARCH_KEY}-[^\"]+\.zip" | head -n 1)"
-
-if [ -z "$FFMPEG_URL" ] || [ -z "$MPV_URL" ]; then
-  echo "Error: Could not find matching download URLs for architecture: $ARCH_KEY" >&2
-  exit 1
-fi
-
-# 3. 创建临时目录并下载/解压
+# 4. 创建临时下载目录与目标目录
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-echo "Downloading ffmpeg from: $FFMPEG_URL"
-curl -fsSL "$FFMPEG_URL" -o "$TMP_DIR/ffmpeg.zip"
+BIN_DIR="${INSTALL_PATH}/bin"
+LIB_DIR="${INSTALL_PATH}/lib"
+mkdir -p "$BIN_DIR" "$LIB_DIR"
 
-echo "Downloading mpv from: $MPV_URL"
-curl -fsSL "$MPV_URL" -o "$TMP_DIR/mpv.zip"
+# 5. 调用 GitHub API 获取最新的 Release 信息
+REPO="eko5624/mpv-mac"
+API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 
-echo "Extracting archives..."
-unzip -q "$TMP_DIR/ffmpeg.zip" -d "$TMP_DIR/extracted"
-unzip -q "$TMP_DIR/mpv.zip" -d "$TMP_DIR/extracted"
+echo "--> Fetching latest release info from ${REPO}..."
+RELEASE_JSON="$(curl -sSL "$API_URL")"
 
-# 4. 创建 asdf 目标 bin 目录并查找移动目标二进制文件
-TARGET_BIN_DIR="${ASDF_INSTALL_PATH}/bin"
-mkdir -p "$TARGET_BIN_DIR"
+# 提取符合当前架构的所有 .zip 下载链接
+URLS="$(echo "$RELEASE_JSON" | grep -oE 'https://github\.com/[^"]+\.zip' | grep "${ARCH_KEY}" | sort -u)"
 
-TARGET_FILES=("ffmpeg" "ffplay" "ffprobe" "mpv")
+if [ -z "$URLS" ]; then
+  echo "Error: No matching ZIP assets found for architecture ${ARCH_KEY}." >&2
+  exit 1
+fi
 
-echo "Installing binaries into $TARGET_BIN_DIR ..."
-for binary in "${TARGET_FILES[@]}"; do
-  # 遍历查找对应名称的文件
-  FOUND_PATH="$(find "$TMP_DIR/extracted" -type f -name "$binary" | head -n 1)"
+# 6. 下载并解压 ZIP 文件
+echo "$URLS" | while read -r url; do
+  [ -z "$url" ] && continue
+  filename="$(basename "$url")"
+  echo "--> Downloading ${filename}..."
+  curl -sSL "$url" -o "${TMP_DIR}/${filename}"
   
-  if [ -n "$FOUND_PATH" ]; then
-    cp "$FOUND_PATH" "$TARGET_BIN_DIR/$binary"
-    chmod +x "$TARGET_BIN_DIR/$binary"
-    echo "  - Installed $binary"
+  echo "--> Extracting ${filename}..."
+  unzip -q -o "${TMP_DIR}/${filename}" -d "$TMP_DIR"
+done
+
+# 7. 查找并移动二进制文件到 bin 目录
+echo "--> Moving binaries to ${BIN_DIR}..."
+TARGET_BINS=("ffmpeg" "ffplay" "ffprobe" "mpv")
+
+for bin in "${TARGET_BINS[@]}"; do
+  # 排除刚才下载的 zip 文件本身，查找同名可执行文件
+  found_file="$(find "$TMP_DIR" -type f -name "$bin" ! -name "*.zip" | head -n 1)"
+  if [ -n "$found_file" ]; then
+    cp "$found_file" "${BIN_DIR}/"
+    chmod +x "${BIN_DIR}/${bin}"
+    echo "    Installed ${bin}"
   else
-    echo "  - Warning: $binary not found in released archives." >&2
+    echo "    Warning: Binary ${bin} not found in release assets."
   fi
 done
 
-echo "Installation completed successfully!"
+# 8. 查找并移动所有 .dylib 动态库到 lib 目录
+echo "--> Moving shared libraries (*.dylib) to ${LIB_DIR}..."
+find "$TMP_DIR" -type f -name "*.dylib" | while read -r dylib; do
+  cp "$dylib" "${LIB_DIR}/"
+  echo "    Installed $(basename "$dylib")"
+done
+
+echo "--> Installation completed successfully!"
