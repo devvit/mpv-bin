@@ -53,9 +53,9 @@ echo "$URLS" | while read -r url; do
   unzip -q -o "$TEMP_DIR/$zip_name" -d "$TEMP_DIR/extracted"
 done
 
-# 6. 创建 asdf 安装目标路径下的 bin 和 lib 目录
+# 6. 创建 asdf 安装目标路径下的 bin 和 bin/lib 目录
 TARGET_BIN="${ASDF_INSTALL_PATH}/bin"
-TARGET_LIB="${ASDF_INSTALL_PATH}/lib"
+TARGET_LIB="${ASDF_INSTALL_PATH}/bin/lib"
 
 mkdir -p "$TARGET_BIN" "$TARGET_LIB"
 
@@ -73,8 +73,8 @@ for bin_name in "${TARGET_BINS[@]}"; do
   fi
 done
 
-# 8. 查找所有 *.dylib 库文件并复制到 lib 目录
-echo "Installing dynamic libraries (*.dylib)..."
+# 8. 查找所有 *.dylib 库文件并复制到 bin/lib 目录
+echo "Installing dynamic libraries (*.dylib) to bin/lib..."
 find "$TEMP_DIR/extracted" -type f -name "*.dylib" -exec cp {} "$TARGET_LIB/" \;
 
 echo "Installation complete: ${ASDF_INSTALL_PATH}"
