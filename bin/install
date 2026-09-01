@@ -41,8 +41,7 @@ fi
 
 # 3. 创建临时目录并下载/解压
 TMP_DIR="$(mktemp -d)"
-echo $TMP_DIR
-# trap 'rm -rf "$TMP_DIR"' EXIT
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo "Downloading ffmpeg from: $FFMPEG_URL"
 curl -fsSL "$FFMPEG_URL" -o "$TMP_DIR/ffmpeg.zip"
