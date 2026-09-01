@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# 1. 限制仅支持 macOS
+if [[ "$(uname)" != "Darwin" ]]; then
+  echo "Error: This asdf plugin only supports macOS." >&2
+  exit 1
+fi
+
+# 2. 识别系统架构 (arm64 vs x86_64)
+ARCH="$(uname -m)"
+if [[ "$ARCH" == "arm64" ]]; then
+  ARCH_TAG="arm64"
+elif [[ "$ARCH" == "x86_64" ]]; then
+  ARCH_TAG="x86_64"
+else
+  echo "Error: Unsupported architecture: $ARCH" >&2
+  exit 1
+fi
+
+INSTALL_PATH="${ASDF_INSTALL_PATH:-$1}"
+BIN_DIR="${INSTALL_PATH}/bin"
+
+mkdir -p "$BIN_DIR"
+
+# 3. 动态获取 GitHub 最新 Release 信息
+REPO="eko5624/mpv-mac"
+echo "Fetching latest release from https://github.com/${REPO}..."
+
+RELEASE_JSON=$(curl -sSL "https://api.github.com/repos/${REPO}/releases/latest")
+
+# 4. 从 API 返回结果中提取与当前架构匹配的 zip 下载链接
+FFMPEG_URL=$(echo "$RELEASE_JSON" | grep -oE "https://[^\"]+ffmpeg-${ARCH_TAG}[^\"]+\.zip" | head -n 1)
+MPV_URL=$(echo "$RELEASE_JSON" | grep -oE "https://[^\"]+mpv-${ARCH_TAG}[^\"]+\.zip" | head -n 1)
+
+if [[ -z "$FFMPEG_URL" || -z "$MPV_URL" ]]; then
+  echo "Error: Could not find matching asset URLs for architecture ${ARCH_TAG} in the latest release." >&2
+  exit 1
+fi
+
+# 5. 创建临时目录并处理下载解压
+TMP_DIR=$(mktemp -d)
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+download_and_extract() {
+  local url="$1"
+  local name="$2"
+  local zip_path="${TMP_DIR}/${name}.zip"
+
+  echo "Downloading ${name} from ${url}..."
+  curl -sSL -o "$zip_path" "$url"
+
+  echo "Extracting ${name}..."
+  unzip -q -o "$zip_path" -d "$TMP_DIR"
+}
+
+download_and_extract "$FFMPEG_URL" "ffmpeg"
+download_and_extract "$MPV_URL" "mpv"
+
+# 6. 将解压出来的所有二进制文件或 .app 内的可执行文件移动到 install 目录的 bin 中
+echo "Installing binaries into ${BIN_DIR}..."
+
+# 查找临时目录下的所有可执行文件（如 ffmpeg, ffprobe, mpv 等）并移入 bin
+find "$TMP_DIR" -type f -maxdepth 2 \( -name "ffmpeg" -o -name "ffprobe" -o -name "ffplay" -o -name "mpv" \) -exec cp -f {} "$BIN_DIR/" \;
+
+# 针对 macOS .app 包的处理：如果解压出的是 mpv.app，提取其中的二进制文件
+if [[ -d "${TMP_DIR}/mpv.app" ]]; then
+  if [[ -f "${TMP_DIR}/mpv.app/Contents/MacOS/mpv" ]]; then
+    cp -f "${TMP_DIR}/mpv.app/Contents/MacOS/mpv" "$BIN_DIR/"
+  fi
+fi
+
+# 赋予执行权限
+chmod +x "$BIN_DIR"/*
+
+echo "Installation complete! Binaries located at ${BIN_DIR}:"
+ls -la "$BIN_DIR"
