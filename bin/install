@@ -32,7 +32,7 @@ RELEASE_JSON="$(curl -fsSL "$API_URL")"
 
 # 提取匹配当前架构的 ffmpeg 和 mpv zip 下载 URL
 FFMPEG_URL="$(echo "$RELEASE_JSON" | grep -oE "https://[^\"]+ffmpeg-${ARCH_KEY}-[^\"]+\.zip" | head -n 1)"
-MPV_URL="$(echo "$RELEASE_JSON" | grep -oE "https://[^\"]+mpv-${ARCH_KEY}-[^\"]+\.zip" | head -n 1)"
+MPV_URL="$(echo "$RELEASE_JSON" | grep -v libmpv | grep -oE "https://[^\"]+mpv-${ARCH_KEY}-[^\"]+\.zip" | head -n 1)"
 
 if [ -z "$FFMPEG_URL" ] || [ -z "$MPV_URL" ]; then
   echo "Error: Could not find matching download URLs for architecture: $ARCH_KEY" >&2
