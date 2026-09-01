@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
 
-# 1. 架构与系统检查
+# 1. 检查操作系统是否为 macOS
 OS="$(uname -s)"
 if [ "$OS" != "Darwin" ]; then
   echo "Error: This plugin only supports macOS." >&2
   exit 1
 fi
 
+# 2. 判断 CPU 架构 (arm64 或 x86_64)
 ARCH="$(uname -m)"
 case "$ARCH" in
-  arm64|aarch64)
-    ARCH_KEY="arm64"
-    ;;
   x86_64)
     ARCH_KEY="x86_64"
+    ;;
+  arm64|aarch64)
+    ARCH_KEY="arm64"
     ;;
   *)
     echo "Error: Unsupported architecture $ARCH" >&2
@@ -23,61 +23,58 @@ case "$ARCH" in
     ;;
 esac
 
-# 2. 获取 asdf 传入的参数
-INSTALL_TYPE="$1"
-VERSION="$2"
-INSTALL_PATH="$3"
-
-BIN_DIR="${INSTALL_PATH}/bin"
-LIB_DIR="${INSTALL_PATH}/lib"
-
-mkdir -p "${BIN_DIR}" "${LIB_DIR}"
-
 # 3. 创建临时工作目录
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "${TMP_DIR}"' EXIT
+TEMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TEMP_DIR"' EXIT
 
 echo "Fetching latest release information from GitHub..."
 
-# 4. 请求 API 获取最新 Release 的所有下载地址
-RELEASE_JSON="$(curl -sSL "https://api.github.com/repos/eko5624/mpv-mac/releases/latest")"
+# 4. 自动查询 GitHub API 获取最新的 Release Tag 及下载资源列表
+RELEASE_JSON="$(curl -sSL -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/eko5624/mpv-mac/releases/latest")"
 
-# 解析符合当前架构的所有 zip 链接
-DOWNLOAD_URLS=$(echo "$RELEASE_JSON" | grep -oE "https://[^\"]+\\.zip" | grep "${ARCH_KEY}" || true)
+# 提取符合当前 CPU 架构的所有 .zip URL
+URLS="$(echo "$RELEASE_JSON" | grep -oE 'https://github.com/eko5624/mpv-mac/releases/download/[^"]+\.zip' | grep "$ARCH_KEY" | sort -u)"
 
-if [ -z "$DOWNLOAD_URLS" ]; then
-  echo "Error: Could not find zip packages for architecture '${ARCH_KEY}' in the latest release." >&2
+if [ -z "$URLS" ]; then
+  echo "Error: No matching zip release assets found for architecture '$ARCH_KEY'." >&2
   exit 1
 fi
 
-# 5. 下载并解压对应的 zip 包
-cd "${TMP_DIR}"
-for url in $DOWNLOAD_URLS; do
-  echo "Downloading: ${url}"
-  filename=$(basename "$url")
-  curl -sSL -o "$filename" "$url"
+# 5. 下载并解压对应的 zip 文件
+mkdir -p "$TEMP_DIR/extracted"
+
+echo "$URLS" | while read -r url; do
+  [ -z "$url" ] && continue
+  zip_name="$(basename "$url")"
+  echo "Downloading $zip_name..."
+  curl -sSL "$url" -o "$TEMP_DIR/$zip_name"
   
-  echo "Unpacking: ${filename}"
-  unzip -q -o "$filename" -d "extracted_${filename}"
+  echo "Extracting $zip_name..."
+  unzip -q -o "$TEMP_DIR/$zip_name" -d "$TEMP_DIR/extracted"
 done
 
-# 6. 查找指定的目标二进制文件并移动到 bin/
-echo "Installing binaries to ${BIN_DIR}..."
+# 6. 创建 asdf 安装目标路径下的 bin 和 lib 目录
+TARGET_BIN="${ASDF_INSTALL_PATH}/bin"
+TARGET_LIB="${ASDF_INSTALL_PATH}/lib"
+
+mkdir -p "$TARGET_BIN" "$TARGET_LIB"
+
+# 7. 查找 4 个指定的可执行二进制文件并复制到 bin 目录
 TARGET_BINS=("ffmpeg" "ffplay" "ffprobe" "mpv")
 
 for bin_name in "${TARGET_BINS[@]}"; do
-  found_file=$(find . -type f -name "$bin_name" | head -n 1)
+  found_file="$(find "$TEMP_DIR/extracted" -type f -name "$bin_name" | head -n 1)"
   if [ -n "$found_file" ]; then
-    echo "  -> Found ${bin_name}"
-    cp -p "$found_file" "${BIN_DIR}/${bin_name}"
-    chmod +x "${BIN_DIR}/${bin_name}"
+    echo "Installing binary: $bin_name"
+    cp "$found_file" "$TARGET_BIN/"
+    chmod +x "$TARGET_BIN/$bin_name"
   else
-    echo "  -> Warning: ${bin_name} not found in release packages." >&2
+    echo "Warning: Binary '$bin_name' not found in extracted archives." >&2
   fi
 done
 
-# 7. 查找所有 *.dylib 库文件并移动到 lib/
-echo "Installing dylibs to ${LIB_DIR}..."
-find . -type f -name "*.dylib" -exec cp -p {} "${LIB_DIR}/" \;
+# 8. 查找所有 *.dylib 库文件并复制到 lib 目录
+echo "Installing dynamic libraries (*.dylib)..."
+find "$TEMP_DIR/extracted" -type f -name "*.dylib" -exec cp {} "$TARGET_LIB/" \;
 
-echo "Successfully installed ffmpeg & mpv binaries to ${INSTALL_PATH}"
+echo "Installation complete: ${ASDF_INSTALL_PATH}"
